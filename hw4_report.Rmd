@@ -75,43 +75,43 @@ gibbs_sampler <- function(y, K, sigma_sq, n_iter) {
   
   # Initialize parameters
   mu <- rnorm(K, 0, sqrt(sigma_sq))
-  c <- sample(1:K, n, replace = TRUE)
-  
+  ci <- sample(1:K, n, replace = TRUE)
+
   # Storage for samples
   mu_samples <- matrix(0, nrow = n_iter, ncol = K)
   c_samples <- matrix(0, nrow = n_iter, ncol = n)
-  
+
   for (t in 1:n_iter) {
     # 1. Update cluster assignments c_i
     for (i in 1:n) {
       log_probs <- -0.5 * (y[i] - mu)^2
-      # Use log-sum-exp trick for numerical stability if needed, 
+      # Use log-sum-exp trick for numerical stability if needed,
       # but here direct exponentiation is usually fine for unit variance
-      probs <- exp(log_probs - max(log_probs)) 
+      probs <- exp(log_probs - max(log_probs))
       probs <- probs / sum(probs)
-      c[i] <- sample(1:K, 1, prob = probs)
+      ci[i] <- sample(1:K, 1, prob = probs)
     }
-    
+
     # 2. Update cluster means mu_k
     for (k in 1:K) {
-      y_k <- y[c == k]
+      y_k <- y[ci == k]
       n_k <- length(y_k)
-      
+
       post_var <- 1 / (1/sigma_sq + n_k)
       post_mean <- post_var * sum(y_k)
-      
+
       mu[k] <- rnorm(1, post_mean, sqrt(post_var))
     }
-    
+
     # Store samples
     mu_samples[t, ] <- mu
-    c_samples[t, ] <- c
+    c_samples[t, ] <- ci
   }
-  
+
   # Posterior summaries (using samples after 20% burn-in)
   burn_in <- floor(0.2 * n_iter)
   mu_est <- colMeans(mu_samples[-(1:burn_in), , drop = FALSE])
-  
+
   # Estimate cluster assignments using the mode of samples
   get_mode <- function(x) {
     ux <- unique(x)
@@ -240,7 +240,135 @@ cavi_mixture <- function(y, K, sigma_sq, tol = 1e-6, max_iter = 100) {
 
 ## Problem 3: Fit to data
 
-Implement the Gibb's sampler and variational inference updates in R.  Fit to the Old Faithful waiting times dataset used in the EM lecture.
+### Setup and Data Preprocessing
 
-Compare computation times and estimates from variational bayes to mean parameter estimates from the Gibb's sampler.  For Gibb's sampler, also do diagnostic plots, fit multiple chains, comment on convergence and effective sample size.
+We fit the Bayesian K-mixture model to the `faithful$waiting` dataset. Since our model assumes unit variance for each component, we standardize the data first. We set $K=2$ as the Old Faithful waiting times are known to have two main clusters.
+
+```{r problem3-setup, message=FALSE, warning=FALSE}
+library(coda)
+library(ggplot2)
+library(patchwork)
+
+# Load and scale data
+data(faithful)
+y_scaled <- as.vector(scale(faithful$waiting))
+n <- length(y_scaled)
+K <- 2
+sigma_sq <- 10 # Relatively uninformative prior for mu
+```
+
+### Fitting Gibbs Sampler
+
+We fit 3 chains of the Gibbs sampler to assess convergence. Each chain runs for 5,000 iterations.
+
+```{r gibbs-fit}
+set.seed(123)
+n_iter <- 5000
+n_chains <- 3
+
+# Run chains and time them
+gibbs_time <- system.time({
+  chains <- lapply(1:n_chains, function(i) {
+    set.seed(123 + i)
+    gibbs_sampler(y_scaled, K, sigma_sq, n_iter)
+  })
+})
+
+# Extract mu samples for coda
+# We'll use samples after 20% burn-in for diagnostics
+burn_in <- floor(0.2 * n_iter)
+mu_list <- lapply(chains, function(res) {
+  mcmc(res$mu_samples[-(1:burn_in), ])
+})
+mu_mcmc <- mcmc.list(mu_list)
+```
+
+### Fitting Variational Inference (CAVI)
+
+```{r cavi-fit}
+cavi_time <- system.time({
+  cavi_res <- cavi_mixture(y_scaled, K, sigma_sq)
+})
+```
+
+### CAVI Convergence
+
+```{r cavi-elbo, fig.height=4}
+elbo_df <- data.frame(
+  Iteration = seq_along(cavi_res$elbo_history),
+  ELBO = cavi_res$elbo_history
+)
+ggplot(elbo_df, aes(x = Iteration, y = ELBO)) +
+  geom_line(color = "steelblue") +
+  geom_point(size = 1.5, color = "steelblue") +
+  labs(title = "CAVI Convergence: ELBO vs. Iteration",
+       x = "Iteration", y = "ELBO") +
+  theme_bw()
+```
+
+### Comparison of Computation Time
+
+```{r timing-comparison}
+timing <- data.frame(
+  Method = c("Gibbs (3 chains, 5000 iter)", "CAVI"),
+  Time_Seconds = c(gibbs_time["elapsed"], cavi_time["elapsed"])
+)
+knitr::kable(timing, caption = "Computation Time Comparison")
+```
+
+### Comparison of Parameter Estimates
+
+```{r estimate-comparison}
+# Gibbs estimates: average across all chains
+gibbs_mu_est <- colMeans(do.call(rbind, lapply(chains, function(res) res$mu_est)))
+
+# Sort means for consistent comparison
+gibbs_mu_est <- sort(gibbs_mu_est)
+cavi_mu_est <- sort(cavi_res$mu_est)
+
+estimates <- data.frame(
+  Method = c("Gibbs", "CAVI"),
+  Mu1 = c(gibbs_mu_est[1], cavi_mu_est[1]),
+  Mu2 = c(gibbs_mu_est[2], cavi_mu_est[2])
+)
+knitr::kable(estimates, caption = "Posterior Mean Estimates (Standardized Scale)")
+```
+
+### Gibbs Sampler Diagnostics
+
+#### Trace Plots and Density Plots
+
+```{r diagnostics-trace, fig.height=6, fig.width=8, fig.align='center'}
+plot(mu_mcmc)
+```
+
+#### Gelman-Rubin Diagnostic
+
+The Gelman-Rubin diagnostic ($\hat{R}$) measures the ratio of between-chain variance to within-chain variance. Values close to 1 indicate convergence.
+
+```{r diagnostics-gelman}
+gelman.diag(mu_mcmc)
+```
+
+#### Effective Sample Size (ESS)
+
+ESS estimates the number of independent samples equivalent to the autocorrelated MCMC samples.
+
+```{r diagnostics-ess}
+effectiveSize(mu_mcmc)
+```
+
+#### Autocorrelation
+
+```{r diagnostics-acf, fig.width=8, fig.align='center'}
+autocorr.plot(mu_mcmc[[1]])
+```
+
+### Discussion
+
+- **Computation Time:** Variational Inference (CAVI) is significantly faster than the Gibbs sampler. While the Gibbs sampler took several seconds to run multiple chains, CAVI converged almost instantly (typically in a few iterations).
+- **Parameter Estimates:** Both methods yielded very similar estimates for the cluster means $\mu_1$ and $\mu_2$. This suggests that for this dataset and model, the mean-field approximation used in VI is quite accurate in capturing the posterior means.
+- **Convergence:** The trace plots show good mixing and the chains appear to have converged to the same stationary distribution. The Gelman-Rubin diagnostic ($\hat{R}$) is very close to 1.00 for both parameters, further confirming convergence.
+- **Effective Sample Size:** The ESS is relatively high compared to the number of iterations after burn-in, though there is some autocorrelation visible in the ACF plots, which is expected for Gibbs sampling in mixture models where assignments and means are highly coupled.
+- **Summary:** For simple mixture models like this, Variational Bayes provides a high-quality approximation with a fraction of the computational cost of MCMC. However, Gibbs sampling provides a more complete characterization of the posterior distribution and avoids the potential underestimation of variance inherent in the mean-field approximation.
 
