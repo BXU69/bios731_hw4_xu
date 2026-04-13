@@ -36,6 +36,7 @@ bios731_hw4_xu/
 ├── logs/                   # SLURM stdout/stderr logs (one pair per array job)
 │
 ├── submit.sh               # SLURM array job submission script (array=1–6, partition=wrobel)
+├── check_progress.sh       # Monitoring script: shows per-job simulation progress from SLURM queue and log files
 ├── HW_bayes-1.pdf          # Original assignment instructions
 └── README.md               # This file
 ```
