@@ -1,0 +1,12 @@
+Job 1 | n = 100 | method = gibbs
+  sim 50 / 500
+  sim 100 / 500
+  sim 150 / 500
+  sim 200 / 500
+  sim 250 / 500
+  sim 300 / 500
+  sim 350 / 500
+  sim 400 / 500
+  sim 450 / 500
+  sim 500 / 500
+Saved: results/job1_n100_gibbs.rds 

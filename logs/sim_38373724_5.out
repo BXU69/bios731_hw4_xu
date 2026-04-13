@@ -1,0 +1,3 @@
+Job 5 | n = 10000 | method = gibbs
+  sim 50 / 500
+  sim 100 / 500

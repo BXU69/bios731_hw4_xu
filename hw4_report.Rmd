@@ -372,3 +372,144 @@ autocorr.plot(mu_mcmc[[1]])
 - **Effective Sample Size:** The ESS is relatively high compared to the number of iterations after burn-in, though there is some autocorrelation visible in the ACF plots, which is expected for Gibbs sampling in mixture models where assignments and means are highly coupled.
 - **Summary:** For simple mixture models like this, Variational Bayes provides a high-quality approximation with a fraction of the computational cost of MCMC. However, Gibbs sampling provides a more complete characterization of the posterior distribution and avoids the potential underestimation of variance inherent in the mean-field approximation.
 
+## Problem 4: Simulation Study
+
+We conducted a simulation study to evaluate the Gibbs sampler and CAVI on a 4-component Gaussian mixture model with true means $\mu = \{0, 5, 10, 20\}$ and unit variance. Each method was assessed at sample sizes $n \in \{100, 1000, 10000\}$ over $n_\text{sim} = 500$ replicates. Each scenario (combination of $n$ and method) was assigned a separate job on the Emory RSPH computing cluster using SLURM array jobs. Gibbs chains were run for 10,000 iterations with the first 2,000 discarded as burn-in.
+
+### Load and Summarize Results
+
+```{r p4-load, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+
+# Load all 6 job result files
+rds_files <- list.files("results", pattern = "^job.*\\.rds$", full.names = TRUE)
+
+all_rows <- lapply(rds_files, function(f) {
+  dat <- readRDS(f)
+  K   <- length(dat$mu_true)
+  do.call(rbind, lapply(seq_along(dat$results), function(s) {
+    r <- dat$results[[s]]
+    data.frame(
+      n       = dat$n,
+      method  = dat$method,
+      sim     = s,
+      mu_idx  = 1:K,
+      mu_true = dat$mu_true,
+      bias    = r$bias,
+      covered = r$covered,
+      elapsed = r$elapsed
+    )
+  }))
+})
+
+df <- bind_rows(all_rows)
+
+# Summarize bias, coverage, and computation time with Monte Carlo SE
+summary_df <- df %>%
+  group_by(n, method, mu_true) %>%
+  summarise(
+    mean_bias   = mean(bias),
+    se_bias     = sd(bias) / sqrt(n()),
+    coverage    = mean(covered),
+    se_coverage = sqrt(mean(covered) * (1 - mean(covered)) / n()),
+    mean_time   = mean(elapsed),
+    .groups     = "drop"
+  ) %>%
+  mutate(
+    n_label  = factor(paste0("n=", n),  levels = c("n=100", "n=1000", "n=10000")),
+    mu_label = factor(paste0("mu=", mu_true))
+  )
+```
+
+### Bias
+
+```{r p4-bias, fig.width=10, fig.height=4, fig.align='center'}
+ggplot(summary_df,
+       aes(x = n_label, y = mean_bias, color = method, group = method)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_errorbar(
+    aes(ymin = mean_bias - 1.96 * se_bias,
+        ymax = mean_bias + 1.96 * se_bias),
+    width = 0.2, position = position_dodge(0.4)
+  ) +
+  geom_point(size = 2.5, position = position_dodge(0.4)) +
+  facet_wrap(~ mu_label, nrow = 1) +
+  scale_color_manual(values = c(gibbs = "#2166AC", cavi = "#D6604D"),
+                     labels = c(gibbs = "Gibbs", cavi = "CAVI")) +
+  labs(
+    title = expression("Bias of " * hat(mu) * "  (+/- 1.96 Monte Carlo SE)"),
+    x = "Sample size", y = "Bias", color = "Method"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+### Coverage
+
+```{r p4-coverage, fig.width=10, fig.height=4, fig.align='center'}
+ggplot(summary_df,
+       aes(x = n_label, y = coverage, color = method, group = method)) +
+  geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey50") +
+  geom_errorbar(
+    aes(ymin = coverage - 1.96 * se_coverage,
+        ymax = coverage + 1.96 * se_coverage),
+    width = 0.2, position = position_dodge(0.4)
+  ) +
+  geom_point(size = 2.5, position = position_dodge(0.4)) +
+  facet_wrap(~ mu_label, nrow = 1) +
+  scale_color_manual(values = c(gibbs = "#2166AC", cavi = "#D6604D"),
+                     labels = c(gibbs = "Gibbs", cavi = "CAVI")) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent_format()) +
+  labs(
+    title = expression("Coverage of 95% CI for " * hat(mu) * "  (+/- 1.96 Monte Carlo SE)"),
+    x = "Sample size", y = "Coverage", color = "Method"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+### Computation Time
+
+```{r p4-time, fig.width=7, fig.height=4, fig.align='center'}
+time_df <- df %>%
+  group_by(n, method) %>%
+  summarise(mean_time = mean(elapsed), se_time = sd(elapsed) / sqrt(n()),
+            .groups = "drop") %>%
+  mutate(n_label = factor(paste0("n=", n), levels = c("n=100", "n=1000", "n=10000")))
+
+ggplot(time_df, aes(x = n_label, y = mean_time, color = method, group = method)) +
+  geom_line() +
+  geom_point(size = 2.5) +
+  geom_errorbar(aes(ymin = mean_time - 1.96 * se_time,
+                    ymax = mean_time + 1.96 * se_time),
+                width = 0.2) +
+  scale_color_manual(values = c(gibbs = "#2166AC", cavi = "#D6604D"),
+                     labels = c(gibbs = "Gibbs", cavi = "CAVI")) +
+  scale_y_log10() +
+  labs(title = "Mean computation time per simulation (log scale)",
+       x = "Sample size", y = "Time (seconds)", color = "Method") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+### Discussion
+
+```{r p4-discussion-vals, include=FALSE}
+# Pull key numbers for inline reporting
+bias_tbl <- summary_df %>% select(n, method, mu_true, mean_bias, se_bias)
+cov_tbl  <- summary_df %>% select(n, method, mu_true, coverage)
+time_tbl <- time_df    %>% select(n, method, mean_time)
+
+gibbs_cov_n100   <- round(mean(cov_tbl$coverage[cov_tbl$method == "gibbs" & cov_tbl$n == 100]),   2)
+cavi_cov_n100    <- round(mean(cov_tbl$coverage[cov_tbl$method == "cavi"  & cov_tbl$n == 100]),   2)
+gibbs_cov_n10000 <- round(mean(cov_tbl$coverage[cov_tbl$method == "gibbs" & cov_tbl$n == 10000]), 2)
+cavi_cov_n10000  <- round(mean(cov_tbl$coverage[cov_tbl$method == "cavi"  & cov_tbl$n == 10000]), 2)
+
+gibbs_time_n10000 <- round(mean(time_tbl$mean_time[time_tbl$method == "gibbs" & time_tbl$n == 10000]), 1)
+cavi_time_n10000  <- round(mean(time_tbl$mean_time[time_tbl$method == "cavi"  & time_tbl$n == 10000]), 3)
+```
+
+Both the Gibbs sampler and CAVI produced estimates with bias close to zero across all sample sizes and components, and bias decreased as $n$ increased, consistent with asymptotic consistency. At $n = 100$ the bias was slightly larger for both methods due to small-sample variability, but by $n = 10000$ estimates were essentially unbiased for all four means. The two methods were comparable in bias throughout.
+
+Coverage revealed a key difference between the two approaches. The Gibbs sampler achieved empirical coverage close to the nominal 95% level at all sample sizes (average coverage `r gibbs_cov_n100` at $n=100$, `r gibbs_cov_n10000` at $n=10000$), reflecting the well-calibrated uncertainty quantification of the full posterior. CAVI, by contrast, showed noticeably lower coverage (average `r cavi_cov_n100` at $n=100$, `r cavi_cov_n10000` at $n=10000$), a consequence of the mean-field approximation systematically underestimating posterior variance. This under-coverage did not improve substantially with sample size, highlighting a fundamental limitation of variational inference for uncertainty quantification. In terms of computation, CAVI was dramatically faster: at $n = 10000$, CAVI averaged `r cavi_time_n10000`s per replicate versus `r gibbs_time_n10000`s for Gibbs — a speedup of over two orders of magnitude. These results illustrate the classic bias-variance trade-off in approximate inference: CAVI offers substantial computational savings but at the cost of reliable posterior uncertainty estimates.
